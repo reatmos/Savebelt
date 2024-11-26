@@ -1,0 +1,6 @@
+train: data/custom/train/images
+val: data/custom/val/images
+
+nc: 2
+
+names: ['person', 'head']
