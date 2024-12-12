@@ -10,13 +10,12 @@ from models.experimental import attempt_load
 from utils.datasets import LoadStreams, LoadImages
 from utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, apply_classifier, \
     scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
-from utils.plots import plot_one_box, circle_centers
+from utils.plots import plot_one_box, GridManager, GridConfig
 from utils.torch_utils import select_device, load_classifier, time_synchronized
 
 # 전역변수
 slave_grid = np.zeros((5, 6), dtype=int)
-grid_counts = np.zeros((5, 6), dtype=int)
-test_grid01 = np.zeros((5, 6), dtype=int)
+temp_grid = np.zeros((5, 6), dtype=int)
 
 # 주변 그리드 1차 보정 함수
 def calculate_corrected_value(grid, i, j, w0, w1, w2):
@@ -53,10 +52,9 @@ def calculate_corrected_value(grid, i, j, w0, w1, w2):
 def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=0.25, iou_thres=0.45, device="0",
            view_img=True, save_txt=False, save_conf=False, classes=None, agnostic_nms=False, augment=False,
            project="samples/after", name="exp", exist_ok=False, heads=True, person=False, save_img=False):
-    global slave_grid, grid_counts, test_grid01
+    global slave_grid, temp_grid
     source, weights, view_img, save_txt, imgsz = source, weights, view_img, save_txt, img_size
-    webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
-        ('rtsp://', 'rtmp://', 'http://'))
+    webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(('rtsp://', 'rtmp://', 'http://'))
     useTello = source.startswith('tello')
 
     save_dir = Path(increment_path(Path(project) / name, exist_ok=exist_ok))
@@ -67,6 +65,7 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
     half = device.type != 'cpu'
 
     model = attempt_load(weights, map_location=device)
+    grid_manager = GridManager(GridConfig())
     stride = int(model.stride.max())
     imgsz = check_img_size(imgsz, s=stride)
     if half:
@@ -78,13 +77,14 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
         modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model']).to(device).eval()
 
     vid_path, vid_writer = None, None
+    # 소스별 설정
     if webcam:
-        # strSource = "webcam"
+        strSource = "webcam"
         view_img = check_imshow()
         cudnn.benchmark = True
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     elif useTello:
-        # strSource = "tello"
+        strSource = "tello"
         tello = Tello()
         tello.connect()
         tello.streamon()
@@ -92,6 +92,7 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
         cudnn.benchmark = True
         dataset = LoadStreams('udp://@0.0.0.0:11111', img_size=imgsz, stride=stride)
     else:
+        strSource = "files"
         save_img = True
         dataset = LoadImages(source, img_size=imgsz, stride=stride)
 
@@ -107,6 +108,7 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
         img /= 255.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
+        grid_manager.clear()
 
         t1 = time_synchronized()
         pred = model(img, augment=augment)[0]
@@ -133,8 +135,8 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
             h, w = im0.shape[:2]
             grid_size_x = 6  # 가로 그리드 개수
             grid_size_y = 5  # 세로 그리드 개수
-            rect_width = w // grid_size_x
-            rect_height = h // grid_size_y
+            rect_width = w // grid_manager.config.grid_size_x
+            rect_height = h // grid_manager.config.grid_size_y
 
             # 객체가 인식될 때
             if len(det):
@@ -143,8 +145,6 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "
-
-                circle_centers.clear()
 
                 for *xyxy, conf, cls in reversed(det):
                     if save_txt:
@@ -158,16 +158,57 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
                         # 프레임에 인식된 객체 표시
                         if heads or person:
                             if 'head' in label and heads:
-                                plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                                plot_one_box(xyxy, im0, grid_manager, label=label, color=colors[int(cls)], line_thickness=3)
                             if 'person' in label and person:
-                                plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                                plot_one_box(xyxy, im0, grid_manager, label=label, color=colors[int(cls)], line_thickness=3)
                         else:
-                            plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                            plot_one_box(xyxy, im0, grid_manager, label=label, color=colors[int(cls)], line_thickness=3)
 
-                grid_counts = np.zeros((grid_size_y, grid_size_x), dtype=int)
-                test_grid01 = np.zeros((grid_size_y, grid_size_x), dtype=int)
+                temp_grid = np.zeros((grid_size_y, grid_size_x), dtype=int)
                 slave_grid = np.zeros((grid_size_y, grid_size_x), dtype=int)
 
+                grid_manager.update_grid(im0.shape)
+
+                for i in range(grid_manager.config.grid_size_y):
+                    for j in range(grid_manager.config.grid_size_x):
+                        x1 = j * rect_width
+                        y1 = i * rect_height
+                        x2 = x1 + rect_width
+                        y2 = y1 + rect_height
+
+                        # Draw grid
+                        cv2.rectangle(im0, (x1, y1), (x2, y2), (255, 255, 255), 2)
+
+                        # 가중치 설정
+                        w0 = 0.9  # 현재 셀의 가중치
+                        w1 = 0.1  # 상하좌우 인접 셀의 가중치
+                        w2 = 0.0  # 대각선 셀의 가중치
+
+                        # 주변 그리드를 통한 1차 보정
+                        corrected_value = calculate_corrected_value(grid_manager.grid_counts, i, j, w0, w1, w2)
+                        temp_grid[i, j] = corrected_value
+                        slave_grid = np.flip(temp_grid)
+                        text_pos = (x1 + 10, y1 + 60)
+
+                        # Color based on corrected value
+                        if corrected_value >= 7:
+                            color = (0, 0, 255)  # Red
+                        elif corrected_value >= 6:
+                            color = (0, 165, 255)  # Orange
+                        elif corrected_value >= 5:
+                            color = (0, 255, 255)  # Yellow
+                        else:
+                            color = (255, 255, 255)  # White
+
+                        # Add semi-transparent overlay
+                        overlay = im0[y1:y2, x1:x2].copy()
+                        cv2.rectangle(overlay, (0, 0), (rect_width, rect_height), color, cv2.FILLED)
+                        cv2.addWeighted(overlay, 0.2, im0[y1:y2, x1:x2], 0.8, 0, im0[y1:y2, x1:x2])
+
+                        # Draw corrected value
+                        cv2.putText(im0, str(round(corrected_value, 2)), text_pos,
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7,(0, 0, 0), 2)
+                '''
                 # 각 그리드별 인식된 객체
                 for center_x, center_y in circle_centers:
                     grid_x = int(center_x // rect_width)
@@ -181,7 +222,7 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
                         y1 = i * rect_height
                         x2 = x1 + rect_width
                         y2 = y1 + rect_height
-                        text_position = (x1 + 10, y1 + 25) # 640x480 : x1 + 10, y1 + 25 / 800x600 : x1 + 10, y1 + 30 / 1920x1080 : x1 + 10, y1 + 40
+                        text_position = (x1 + 10, y1 + 60) # 640x480 : x1 + 10, y1 + 25 / 800x600 : x1 + 10, y1 + 30 / 1920x1080 : x1 + 10, y1 + 40
 
                         # 가중치 설정 (임의값 사용. 테스트 하면서 해봐야 함)
                         w0 = 0.9  # 현재 셀의 가중치
@@ -193,7 +234,7 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
                         test_grid01[i, j] = corrected_value
                         slave_grid = np.flip(test_grid01)
                         test_grid01 = np.flip(grid_counts)
-                        cv2.putText(im0, str(round(corrected_value, 2)), text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.7,(0, 0, 0), 2)
+                        cv2.putText(im0, str(round(corrected_value, 2)), text_position, cv2.FONT_HERSHEY_SIMPLEX, 1.7,(0, 0, 0), 3)
                         # 640x480 : x1 + 65, y1 + 25
                         # 800x600 : x1 + 90, y1 + 30
                         # 1920x1080 : x1 + 240, y1 + 40
@@ -214,8 +255,10 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
                         cv2.rectangle(overlay, (0, 0), (rect_width, rect_height), alertcolor, cv2.FILLED)
                         alpha = 0.2  # 색불투명도
                         cv2.addWeighted(overlay, alpha, im0[y1:y2, x1:x2], 1 - alpha, 0, im0[y1:y2, x1:x2])
+                '''
 
                 if view_img:
+                    '''
                     for i in range(grid_size_y):
                         for j in range(grid_size_x):
                             x1 = j * rect_width
@@ -225,8 +268,9 @@ def detect03(source, weights="crowdhuman_yolov5m.pt", img_size=1920, conf_thres=
                             y2 = y1 + rect_height
                             c2 = (x2, y2)
                             cv2.rectangle(im0, c1, c2, (255, 255, 255), 2)
-                            if useTello:
-                                cv2.putText(im0, str(tello.get_battery()), (int(w - 80), 50), cv2.FONT_HERSHEY_PLAIN, 3,[255, 255, 255], 3)
+                            '''
+                    if useTello:
+                        cv2.putText(im0, str(tello.get_battery()), (int(w - 80), 50), cv2.FONT_HERSHEY_PLAIN, 3,[255, 255, 255], 3)
 
                     '''
                     cv2.imshow(str(p), im0)  # 이미지(프레임) 띄우기
