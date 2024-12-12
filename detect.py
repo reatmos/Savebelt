@@ -10,14 +10,13 @@ import detect02
 from models.experimental import attempt_load
 from utils.datasets import LoadStreams, LoadImages
 from utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, apply_classifier, scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
-from utils.plots import plot_one_box, circle_centers
+from utils.plots import plot_one_box, GridManager, GridConfig
 from utils.torch_utils import select_device, load_classifier, time_synchronized
 from detect02 import calculate_corrected_value
 
 # 전역변수
-grid_counts = np.zeros((5, 6), dtype=int)
 s2Cam = np.zeros((5, 6), dtype=int)
-test_grids = np.zeros((5, 6), dtype=int)
+temp_grid = np.zeros((5, 6), dtype=int)
 count3, count2, count1, count0 = 0, 0, 0, 0
 calcable = 1
 calcablee = 1
@@ -55,9 +54,10 @@ def calculate_corrected_value(grid, i, j, w0, w1, w2):
 
 def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thres = 0.25, iou_thres = 0.45, device = "0", view_img = True, save_txt = False, save_conf = False, classes = None, agnostic_nms = False, augment = False, project = "samples/after", name = "exp", exist_ok = False, heads = True, person = False, save_img=True):
     import detect02
-    global count3, count2, count1, count0, grid_counts, s2Cam, test_grids, calcable, calcablee
+    global count3, count2, count1, count0, s2Cam, temp_grid, calcable, calcablee
     source, weights, view_img, save_txt, imgsz = source, weights, view_img, save_txt, img_size
-    webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(('rtsp://', 'rtmp://', 'http://'))
+    webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
+        ('rtsp://', 'rtmp://', 'http://'))
     useTello = source.startswith('tello')
 
     save_dir = Path(increment_path(Path(project) / name, exist_ok=exist_ok))
@@ -68,6 +68,7 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
     half = device.type != 'cpu'
 
     model = attempt_load(weights, map_location=device)
+    grid_manager = GridManager(GridConfig())
     stride = int(model.stride.max())
     imgsz = check_img_size(imgsz, s=stride)
     if half:
@@ -86,7 +87,7 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
         cudnn.benchmark = True
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     elif useTello:
-        # strSource = "tello" # tello 드론
+        # strSource = "tello"
         tello = Tello()
         tello.connect()
         tello.streamon()
@@ -109,6 +110,7 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
         img /= 255.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
+        grid_manager.clear()
 
         t1 = time_synchronized()
         pred = model(img, augment=augment)[0]
@@ -135,8 +137,8 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
             h, w = im0.shape[:2]
             grid_size_x = 6  # 가로 그리드 개수
             grid_size_y = 5  # 세로 그리드 개수
-            rect_width = w // grid_size_x
-            rect_height = h // grid_size_y
+            rect_width = w // grid_manager.config.grid_size_x
+            rect_height = h // grid_manager.config.grid_size_y
             count3, count2, count1, count0 = 0, 0, 0, 0
 
             # 객체가 인식될 때
@@ -147,12 +149,10 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
                     n = (det[:, -1] == c).sum()
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "
 
-                circle_centers.clear()
-
                 for *xyxy, conf, cls in reversed(det):
                     if save_txt:
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist() # 객체 좌표
-                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh) # 객체 클래스명
+                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # 객체 좌표
+                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # 객체 클래스명
                         with open(txt_path + '.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
@@ -161,81 +161,79 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
                         # 프레임에 인식된 객체 표시
                         if heads or person:
                             if 'head' in label and heads:
-                                plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                                plot_one_box(xyxy, im0, grid_manager, label=label, color=colors[int(cls)],
+                                             line_thickness=3)
                             if 'person' in label and person:
-                                plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                                plot_one_box(xyxy, im0, grid_manager, label=label, color=colors[int(cls)],
+                                             line_thickness=3)
                         else:
-                            plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                            plot_one_box(xyxy, im0, grid_manager, label=label, color=colors[int(cls)], line_thickness=3)
 
-                grid_counts = np.zeros((grid_size_y, grid_size_x), dtype=int)
                 master_value = np.zeros((grid_size_y, grid_size_x), dtype=int)
                 s2Cam = np.zeros((grid_size_y, grid_size_x), dtype=int)
-                test_grids = np.zeros((grid_size_y, grid_size_x), dtype=int)
+                temp_grid = np.zeros((grid_size_y, grid_size_x), dtype=int)
                 calcable = 1
                 calcablee = 1
 
-                # 각 그리드별 인식된 객체
-                for center_x, center_y in circle_centers:
-                    grid_x = int(center_x // rect_width)
-                    grid_y = int(center_y // rect_height)
-                    if 0 <= grid_x < grid_size_x and 0 <= grid_y < grid_size_y:
-                        grid_counts[grid_y, grid_x] += 1
+                grid_manager.update_grid(im0.shape)
 
                 # 슬레이브를 통한 2차 보정 안 하는 그리드
-                for i in range(grid_size_y - 4):
-                    for j in range(grid_size_x):
+                for i in range(grid_manager.config.grid_size_y - 4):
+                    for j in range(grid_manager.config.grid_size_x):
                         x1 = j * rect_width
                         y1 = i * rect_height
                         x2 = x1 + rect_width
                         y2 = y1 + rect_height
-                        text_position = (x1 + 10, y1 + 50) # 640x480 : x1 + 10, y1 + 25 / 800x600 : x1 + 10, y1 + 30 / 1920x1080 : x1 + 10, y1 + 40
 
-                        # 가중치 설정 (임의값 사용. 테스트 하면서 해봐야 함)
+                        # Draw grid
+                        cv2.rectangle(im0, (x1, y1), (x2, y2), (255, 255, 255), 2)
+
+                        # 가중치 설정
                         w0 = 0.9  # 현재 셀의 가중치
                         w1 = 0.1  # 상하좌우 인접 셀의 가중치
                         w2 = 0.0  # 대각선 셀의 가중치
 
                         # i, j = 1, 1  # (2, 2) 셀의 인덱스 값
-                        corrected_value = calculate_corrected_value(grid_counts, i, j, w0, w1, w2)
-                        cv2.putText(im0, str(round(corrected_value, 2)), text_position, cv2.FONT_HERSHEY_SIMPLEX, 1.7,(0, 0, 0), 3)
+                        corrected_value = calculate_corrected_value(grid_manager.grid_counts, i, j, w0, w1, w2)
+                        text_pos = (x1 + 10, y1 + 60)
                         # 640x480 : x1 + 65, y1 + 25
                         # 800x600 : x1 + 90, y1 + 30
                         # 1920x1080 : x1 + 240, y1 + 40
 
-                        # 일정 기준이 넘으면 해당 그리드에 색을 입힌다.(BGR 코드)
+                        # Color based on corrected value
                         if corrected_value >= 7:
-                            alertcolor = (0, 0, 255) # 위험 - 빨간색
-                            count3 += 1
+                            color = (0, 0, 255)  # Red
                         elif corrected_value >= 6:
-                            alertcolor = (0, 165, 255) # 경고 - 주황색
-                            count2 += 1
+                            color = (0, 165, 255)  # Orange
                         elif corrected_value >= 5:
-                            alertcolor = (0, 255, 255) # 주의 - 노란색
-                            count1 += 1
-                        elif corrected_value > 0:
-                            alertcolor = (255, 255, 255)  # 안전 또는 평소 - 흰색
-                            count0 += 1
+                            color = (0, 255, 255)  # Yellow
                         else:
-                            alertcolor = (255, 255, 255)
-                            count0 += 1
+                            color = (255, 255, 255)  # White
 
+                        # Add semi-transparent overlay
                         overlay = im0[y1:y2, x1:x2].copy()
-                        cv2.rectangle(overlay, (0, 0), (rect_width, rect_height), alertcolor, cv2.FILLED)
-                        alpha = 0.2  # 색불투명도
-                        cv2.addWeighted(overlay, alpha, im0[y1:y2, x1:x2], 1 - alpha, 0, im0[y1:y2, x1:x2])
+                        cv2.rectangle(overlay, (0, 0), (rect_width, rect_height), color, cv2.FILLED)
+                        cv2.addWeighted(overlay, 0.2, im0[y1:y2, x1:x2], 0.8, 0, im0[y1:y2, x1:x2])
+
+                        # Draw corrected value
+                        cv2.putText(im0, str(round(corrected_value, 2)), text_pos,
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1.7, (0, 0, 0), 3)
 
                 # 슬레이브를 통한 2차 보정을 하는 그리드
-                for k in range(1, grid_size_y):
-                    for l in range(grid_size_x):
+                for k in range(1, grid_manager.config.grid_size_y):
+                    for l in range(grid_manager.config.grid_size_x):
                         x1 = l * rect_width
                         y1 = k * rect_height
                         x2 = x1 + rect_width
                         y2 = y1 + rect_height
 
-                        text_position = (x1 + 10, y1 + 60)
-                        test_grids[k, l] = grid_counts[k, l]
-                        calcable += grid_counts[k, l]
-                        calcablee += test_grids[k, l]
+                        # Draw grid
+                        cv2.rectangle(im0, (x1, y1), (x2, y2), (255, 255, 255), 2)
+
+                        temp_grid[k, l] = grid_manager.grid_counts[k, l]
+                        calcable += grid_manager.grid_counts[k, l]
+                        calcablee += temp_grid[k, l]
+                        text_pos = (x1 + 10, y1 + 60)
 
                         # 가중치 설정 (임의값 사용. 테스트 하면서 해봐야 함)
                         w0 = 0.9  # 현재 셀의 가중치
@@ -243,7 +241,7 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
                         w2 = 0.0  # 대각선 셀의 가중치
 
                         # 주변 그리드를 통한 1차 보정
-                        corrected_value = calculate_corrected_value(grid_counts, k, l, w0, w1, w2)
+                        corrected_value = calculate_corrected_value(grid_manager.grid_counts, k, l, w0, w1, w2)
 
                         # 카메라에서 검출된 사람 수(임의 값임)
                         m1Cam = corrected_value  # '마스터 카메라'에서 검출된 사람 수
@@ -255,29 +253,28 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
                         # 슬레이브를 통한 2차 보정
                         master_value[k, l] = m1Cam + alphaS2 * (s2Cam[k, l] - m1Cam)  # + alphaS3 * (s3Cam - m1Cam)
 
-                        cv2.putText(im0, str(float(master_value[k, l])), text_position, cv2.FONT_HERSHEY_SIMPLEX, 1.7,(0, 0, 0), 3)
-
                         # 일정 기준이 넘으면 해당 그리드에 색을 입힌다.(BGR 코드)
                         if master_value[k, l] >= 7:
-                            alertcolor = (0, 0, 255) # 위험 - 빨간색
+                            color = (0, 0, 255) # 위험 - 빨간색
                             count3 += 1
                         elif master_value[k, l] >= 6:
-                            alertcolor = (0, 165, 255) # 경고 - 주황색
+                            color = (0, 165, 255) # 경고 - 주황색
                             count2 += 1
                         elif master_value[k, l] >= 5:
-                            alertcolor = (0, 255, 255) # 주의 - 노란색
+                            color = (0, 255, 255) # 주의 - 노란색
                             count1 += 1
                         elif master_value[k, l] > 0:
-                            alertcolor = (255, 255, 255)  # 안전 또는 평소 - 흰색
+                            color = (255, 255, 255)  # 안전 또는 평소 - 흰색
                             count0 += 1
                         else:
-                            alertcolor = (255, 255, 255)
+                            color = (255, 255, 255)
                             count0 += 1
 
                         overlay = im0[y1:y2, x1:x2].copy()
-                        cv2.rectangle(overlay, (0, 0), (rect_width, rect_height), alertcolor, cv2.FILLED)
-                        alpha = 0.2  # 색불투명도
-                        cv2.addWeighted(overlay, alpha, im0[y1:y2, x1:x2], 1 - alpha, 0, im0[y1:y2, x1:x2])
+                        cv2.rectangle(overlay, (0, 0), (rect_width, rect_height), color, cv2.FILLED)
+                        cv2.addWeighted(overlay, 0.2, im0[y1:y2, x1:x2], 0.8, 0, im0[y1:y2, x1:x2])
+                        cv2.putText(im0, str(float(master_value[k, l])), text_pos, cv2.FONT_HERSHEY_SIMPLEX, 1.7,
+                                    (0, 0, 0), 3)
 
                 if view_img:
                     for i in range(grid_size_y):
@@ -317,4 +314,4 @@ def detect(source, weights = "crowdhuman_yolov5m.pt", img_size = 1920, conf_thre
         yield im0  # 프레임을 제너레이터로 반환
 
 if __name__ == '__main__':
-    detect("samples/take01")
+    detect("samples/test.jpg")
