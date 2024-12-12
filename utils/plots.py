@@ -7,6 +7,10 @@ import random
 from copy import copy
 from pathlib import Path
 
+from dataclasses import dataclass
+from typing import List, Tuple
+import threading
+
 import cv2
 import matplotlib
 import matplotlib.pyplot as plt
@@ -25,7 +29,45 @@ from utils.metrics import fitness
 matplotlib.rc('font', **{'size': 11})
 matplotlib.use('Agg')  # for writing to files only
 
-circle_centers = []
+@dataclass
+class GridConfig:
+    grid_size_x: int = 6
+    grid_size_y: int = 5
+
+
+class GridManager:
+    def __init__(self, grid_config: GridConfig = GridConfig()):
+        self.config = grid_config
+        self.grid_counts = np.zeros((grid_config.grid_size_y, grid_config.grid_size_x), dtype=int)
+        self.centers: List[Tuple[int, int]] = []
+        self._lock = threading.Lock()
+
+    def add_center(self, center: Tuple[int, int]) -> None:
+        with self._lock:
+            self.centers.append(center)
+
+    def clear(self) -> None:
+        with self._lock:
+            self.centers.clear()
+            self.grid_counts.fill(0)
+
+    def update_grid(self, frame_size: Tuple[int, int]) -> None:
+        with self._lock:
+            if not self.centers:
+                return
+
+            rect_width = frame_size[1] // self.config.grid_size_x
+            rect_height = frame_size[0] // self.config.grid_size_y
+
+            centers = np.array(self.centers)
+            grid_x = (centers[:, 0] // rect_width).astype(int)
+            grid_y = (centers[:, 1] // rect_height).astype(int)
+
+            mask = (0 <= grid_x) & (grid_x < self.config.grid_size_x) & \
+                   (0 <= grid_y) & (grid_y < self.config.grid_size_y)
+
+            self.grid_counts.fill(0)
+            np.add.at(self.grid_counts, (grid_y[mask], grid_x[mask]), 1)
 
 def color_list():
     # Return first 10 plt colors as (r,g,b) https://stackoverflow.com/questions/51350872/python-from-color-name-to-rgb
@@ -55,7 +97,7 @@ def butter_lowpass_filtfilt(data, cutoff=1500, fs=50000, order=5):
     return filtfilt(b, a, data)  # forward-backward filter
 
 
-def plot_one_box(x, img, color=None, label=None, line_thickness=3):
+def plot_one_box(x, img, grid_manager: GridManager, color=None, label=None, line_thickness=3):
     # Plots one bounding box on image img
     tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
     tl = 1
@@ -70,14 +112,14 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=3):
     thickness = 3
     # Using cv2.circle() method
     # Draw a circle with blue line borders of thickness of 2 px
-    center_coordinates = (int((c1[0] + c2[0])/2) , int((c1[1] + c2[1])/2) )
-    # cv2.circle(img, center_coordinates, radius, color, thickness)
-    circle_centers.append(center_coordinates)
+    center = (int((c1[0] + c2[0]) / 2), int((c1[1] + c2[1]) / 2))
+    # cv2.circle(img, center, radius, color, thickness)
+    grid_manager.add_center(center)
 
     font_scale = 0.5  # Font scale for text
     font_thickness = 1  # Font thickness
     text_color = (255, 255, 255)  # White color for text
-    coordinates_text = f'({center_coordinates[0]}, {center_coordinates[1]})'
+    coordinates_text = f'({center[0]}, {center[1]})'
     # cv2.putText(img, coordinates_text, (center_coordinates[0] + 5, center_coordinates[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, font_thickness, lineType=cv2.LINE_AA)
 
     if label and False:
@@ -86,6 +128,8 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=3):
         c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
         cv2.rectangle(img, c1, c2, color, -1, cv2.LINE_AA)  # filled
         cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
+
+    return center
 
 
 def plot_one_box_PIL(box, img, color=None, label=None, line_thickness=None):
