@@ -1,10 +1,12 @@
 # Savebelt
 Design of a Crowd Density Analysis Service Using Grid-Based on Master/Slave Architecture
 
-
-
 https://github.com/user-attachments/assets/52f89bfc-bbd0-40d9-8088-d76b84d9be45
 
+## Developer
+- [reatmos](https://github.com/reatmos)
+
+- [sedalharu](https://github.com/sedalharu)
 
 ## Requirements
 - [crowdhuman_yolo5m.pt](https://drive.google.com/file/d/1gglIwqxaH2iTvy6lZlXuAcMpd_U0GCUb/view)
