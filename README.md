@@ -3,6 +3,8 @@ Design of a Crowd Density Analysis Service Using Grid-Based on Master/Slave Arch
 
 https://github.com/user-attachments/assets/52f89bfc-bbd0-40d9-8088-d76b84d9be45
 
+Youtube: https://youtu.be/EF6XSZnsfD0
+
 ## Developer
 - [reatmos](https://github.com/reatmos)
 
